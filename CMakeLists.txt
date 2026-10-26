@@ -1,0 +1,63 @@
+cmake_minimum_required(VERSION 3.28...3.30)
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/common/bootstrap.cmake" NO_POLICY_SCOPE)
+
+project(${_name} VERSION ${_version})
+
+option(ENABLE_FRONTEND_API "Use obs-frontend-api for UI functionality" OFF)
+option(ENABLE_QT "Use Qt functionality" ON)
+
+include(compilerconfig)
+include(defaults)
+include(helpers)
+
+add_library(${CMAKE_PROJECT_NAME} MODULE)
+
+find_package(libobs REQUIRED)
+target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE OBS::libobs)
+
+if(ENABLE_FRONTEND_API)
+  find_package(obs-frontend-api REQUIRED)
+  target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE OBS::obs-frontend-api)
+endif()
+
+if(ENABLE_QT)
+  find_package(Qt6 COMPONENTS Widgets Core)
+  target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE Qt6::Core Qt6::Widgets)
+  target_compile_options(
+    ${CMAKE_PROJECT_NAME}
+    PRIVATE $<$<C_COMPILER_ID:Clang,AppleClang>:-Wno-quoted-include-in-framework-header -Wno-comma>
+  )
+  set_target_properties(
+    ${CMAKE_PROJECT_NAME}
+    PROPERTIES AUTOMOC ON AUTOUIC ON AUTORCC ON
+  )
+  target_sources(${PROJECT_NAME} PRIVATE src/crop-ui.cpp src/crop-ui.h src/crop-geometry.hpp)
+else()
+  message(FATAL_ERROR "This local Windows visual-crop build requires ENABLE_QT=ON; use build-local.ps1 for the validated OBS 32.2.2 build.")
+endif()
+
+target_sources(
+  ${PROJECT_NAME}
+  PRIVATE
+    src/obs-composite-blur-filter.c
+    src/obs-composite-blur-plugin.c
+    src/obs-composite-blur-filter.h
+    src/blur/gaussian-kernel.c
+    src/blur/gaussian-kernel.h
+    src/obs-utils.c
+    src/obs-utils.h
+    src/blur/gaussian.c
+    src/blur/gaussian.h
+    src/blur/box.c
+    src/blur/box.h
+    src/blur/pixelate.c
+    src/blur/pixelate.h
+    src/blur/dual_kawase.c
+    src/blur/dual_kawase.h
+    src/blur/temporal.c
+    src/blur/temporal.h
+    src/version.h
+)
+
+set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})

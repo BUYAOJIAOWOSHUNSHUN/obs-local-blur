@@ -1,0 +1,16 @@
+{
+    "display_name": "Composite Blur",
+    "id": "096a16ec-a07b-488a-953b-69ac1a3abfd1",
+    "version": "1.6.1",
+    "authors": ["FiniteSingularity"],
+    "name": "obs-composite-blur",
+    "description": "A comprehensive blur filter plugin for OBS.",
+    "long_description": "Provides a variety of blur filters for OBS. Includes Gaussian, Box, Dual Kawase, Temporal, and Pixelization filters",
+    "urls": {
+        "repository": "https://github.com/FiniteSingularity/obs-composite-blur",
+        "website": "https://f15y.com",
+        "support": "https://github.com/FiniteSingularity/obs-composite-blur/issues"
+    },
+    "has_banner": false,
+    "has_icon": false
+}
