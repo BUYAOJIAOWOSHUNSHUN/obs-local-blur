@@ -12,7 +12,7 @@ v1.6.1-local-r5 · Windows x64 · OBS Studio 32.2.2
 
 ![矩形预览：拖动框内移动位置，拖动边点实时缩放](.github/assets/rectangle-drag.gif)
 
-[查看矩形静态预览](.github/assets/rectangle-drag-poster.png)
+若 GitHub 将动图暂停，点击右上角的播放按钮即可观看。[查看矩形静态预览](.github/assets/rectangle-drag-poster.png)
 
 > 动图使用合成示例内容，由已发布插件在独立 Qt/libobs/D3D11 窗口中接收拖动事件并逐帧渲染。鼠标指示和顶部说明为演示叠加；没有录制用户桌面。实际 OBS 主题与窗口布局可能不同。
 
