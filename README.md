@@ -10,9 +10,11 @@ v1.6.1-local-r5 · Windows x64 · OBS Studio 32.2.2
 
 适用于直播、录屏中的局部遮挡。移动、缩放范围时实时查看效果，辅助框和白色控制点只在滤镜编辑预览中显示，不进入录制与直播输出。
 
-![椭圆范围与九个控制点的实际渲染](.github/assets/ellipse-preview.png)
+![矩形预览：拖动框内移动位置，拖动边点实时缩放](.github/assets/rectangle-drag.gif)
 
-> 图中使用合成示例内容，来自本插件独立 Qt/libobs/D3D11 测试窗口的实际渲染；不是用户桌面截图，OBS 主题与窗口布局可能不同。
+[查看矩形静态预览](.github/assets/rectangle-drag-poster.png)
+
+> 动图使用合成示例内容，由已发布插件在独立 Qt/libobs/D3D11 窗口中接收拖动事件并逐帧渲染。鼠标指示和顶部说明为演示叠加；没有录制用户桌面。实际 OBS 主题与窗口布局可能不同。
 
 ## 基于什么项目，优化了什么
 
@@ -52,7 +54,9 @@ EXE 使用 Windows 的 .NET Framework 4.x，不需要另装现代 .NET Desktop R
 - **恢复正圆：** 点击参数区的“恢复正圆”；中心不变，横纵半径取当前较短值。
 - **取消操作：** 拖动过程中按 Esc。
 
-![矩形范围编辑，白点调整宽高](.github/assets/visual-crop-preview.png)
+![椭圆预览：边点调整椭圆度，四角保持比例缩放](.github/assets/ellipse-resize.gif)
+
+边点先把正圆拉成椭圆，再演示角点等比缩放；两段动图会循环播放。[查看椭圆静态预览](.github/assets/ellipse-resize-poster.png)
 
 ### 4. 调整样式，检查输出
 
