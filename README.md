@@ -1,4 +1,8 @@
-[下载 Windows x64 安装包（前往 Releases 下载页）](https://github.com/BUYAOJIAOWOSHUNSHUN/obs-local-blur/releases)
+**[下载 Windows x64 双击安装版 EXE（推荐，无需解压）](https://github.com/BUYAOJIAOWOSHUNSHUN/obs-local-blur/releases/download/v1.6.1-local-r5/obs-local-blur-1.6.1-local-r5-setup-x64.exe)**
+
+[手动安装 ZIP](https://github.com/BUYAOJIAOWOSHUNSHUN/obs-local-blur/releases/download/v1.6.1-local-r5/obs-local-blur-1.6.1-local-r5-windows-x64.zip) · [SHA-256 校验](https://github.com/BUYAOJIAOWOSHUNSHUN/obs-local-blur/releases/download/v1.6.1-local-r5/SHA256SUMS.txt) · [更新说明与历史版本](https://github.com/BUYAOJIAOWOSHUNSHUN/obs-local-blur/releases/tag/v1.6.1-local-r5)
+
+v1.6.1-local-r5 · Windows x64 · OBS Studio 32.2.2
 
 # OBS局部打码插件
 
