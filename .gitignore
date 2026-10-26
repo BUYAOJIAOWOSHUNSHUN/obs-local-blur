@@ -32,3 +32,6 @@
 !/build-local.ps1
 !/README.upstream.md
 !/CHANGELOG.md
+
+!/installer
+!/SECURITY.md

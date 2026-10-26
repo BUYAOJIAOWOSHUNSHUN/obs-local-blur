@@ -98,6 +98,16 @@ int wmain(int argc,wchar_t **wide)
     creditPreview.setFixedWidth(620);creditPreview.adjustSize();
     creditPreview.grab().save(QString::fromUtf8(argv[4])+"/credit-preview.png");
     obs_properties_destroy(actualProperties);
+    // A missing long UTF-8 filename must still be retained without overwriting
+    // a fixed allocation. Exercise longer/shorter/repeated updates and cleanup.
+    for(int length:{254,255,256,1024,4,0}) {
+        const QByteArray path=QString(length,QChar(0x6D4B)).toUtf8();
+        OBSDataAutoRelease pathSettings=obs_data_create();
+        obs_data_set_string(pathSettings,"effect_mask_source_file",path.constData());
+        obs_source_update(filter,pathSettings);obs_source_update(filter,pathSettings);
+        OBSDataAutoRelease current=obs_source_get_settings(filter);
+        check(QByteArray(obs_data_get_string(current,"effect_mask_source_file"))==path,"long UTF-8 mask path updates preserve full settings");
+    }
     signal_handler_connect(obs_source_get_signal_handler(filter),"update_properties",refreshed,nullptr);
     check(strcmp(obs_source_get_name(filter),"Composite Blur")==0,"existing filter-instance name preserved");
     const auto before=capture(source);before.save(QString::fromUtf8(argv[4])+"/output-before.png");

@@ -75,8 +75,7 @@ static void *composite_blur_create(obs_data_t *settings, obs_source_t *source)
 	dstr_init_copy(&filter->mask_source_name, "");
 	dstr_init_copy(&filter->background_source_name, "");
 
-	filter->mask_image_path = bzalloc(255 * sizeof(char));
-	strcpy(filter->mask_image_path, "");
+	filter->mask_image_path = bstrdup("");
 
 	filter->context = source;
 	signal_handler_t *sh = obs_source_get_signal_handler(filter->context);
@@ -473,7 +472,9 @@ static void composite_blur_update(void *data, obs_data_t *settings)
 			// data->mask_texture_size.y = (float)gs_texture_get_height(data->mask_texture);
 			obs_leave_graphics();
 		}
-		strcpy(filter->mask_image_path, mask_image_file);
+		char *new_mask_image_path = bstrdup(mask_image_file);
+		bfree(filter->mask_image_path);
+		filter->mask_image_path = new_mask_image_path;
 	}
 
 	filter->mask_source_multiplier = (float)obs_data_get_double(
