@@ -16,11 +16,11 @@ try{
  $env:INCLUDE="$vc/include;$sdk/Include/$sdkVersion/ucrt;$sdk/Include/$sdkVersion/shared;$sdk/Include/$sdkVersion/um"
  $env:LIB="$vc/lib/x64;$sdk/Lib/$sdkVersion/ucrt/x64;$sdk/Lib/$sdkVersion/um/x64"
  $exe="$BuildDirectory/visual-crop-smoke.exe"
- & "$vc/bin/Hostx64/x64/cl.exe" /nologo /O2 /W4 /WX /MD /utf-8 /std:c++17 /EHsc /Zc:__cplusplus /permissive- /DQT_NO_DEBUG /DQT_WIDGETS_LIB /DQT_GUI_LIB /DQT_CORE_LIB "/I$QtRoot/include" "/I$QtRoot/include/QtCore" "/I$QtRoot/include/QtGui" "/I$QtRoot/include/QtWidgets" "/I$BuildDirectory/generated" "/I$ObsSource/libobs" "/I$ObsSource/deps" "$PSScriptRoot/visual-crop-smoke.cpp" "/Fo$BuildDirectory/visual-crop-smoke.obj" /link "/OUT:$exe" "$BuildDirectory/obs.lib" "/LIBPATH:$QtRoot/lib" Qt6Widgets.lib Qt6Gui.lib Qt6Core.lib
+ & "$vc/bin/Hostx64/x64/cl.exe" /nologo /O2 /W4 /WX /MD /utf-8 /std:c++17 /EHsc /Zc:__cplusplus /permissive- /DQT_NO_DEBUG /DQT_WIDGETS_LIB /DQT_GUI_LIB /DQT_CORE_LIB "/I$QtRoot/include" "/I$QtRoot/include/QtCore" "/I$QtRoot/include/QtGui" "/I$QtRoot/include/QtWidgets" "/I$BuildDirectory/generated" "/I$ObsSource/libobs" "/I$ObsSource/deps" "$PSScriptRoot/visual-crop-smoke.cpp" "/Fo$BuildDirectory/visual-crop-smoke.obj" /link "/OUT:$exe" "$BuildDirectory/obs-utils_c.obj" "$BuildDirectory/obs.lib" "/LIBPATH:$QtRoot/lib" Qt6Widgets.lib Qt6Gui.lib Qt6Core.lib
  if($LASTEXITCODE -ne 0){throw 'Test compilation failed'}
  $env:QT_QPA_PLATFORM='windows';$env:QT_QPA_PLATFORM_PLUGIN_PATH="$ObsRoot/bin/64bit/platforms"
  & $exe "$ObsRoot/data/libobs/" "$PackageDirectory/obs-plugins/64bit/obs-composite-blur.dll" "$PackageDirectory/data/obs-plugins/obs-composite-blur/" $ReviewDirectory *> "$ReviewDirectory/test.log"
  $code=$LASTEXITCODE
- Get-Content -LiteralPath "$ReviewDirectory/test.log" | Where-Object {$_ -match '^(PASS|FAIL|RESULT)'}
+ Get-Content -LiteralPath "$ReviewDirectory/test.log" | Where-Object {$_ -match '^(PASS|FAIL|RESULT|PERF)'}
  if($code -ne 0){Get-Content -LiteralPath "$ReviewDirectory/test.log" -Tail 30;throw "Tests failed: $code"}
 }finally{foreach($name in $saved.Keys){[Environment]::SetEnvironmentVariable($name,$saved[$name],'Process')}}

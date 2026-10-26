@@ -47,4 +47,23 @@ inline Rect drag(Rect r,int handle,Point delta,double minWidth,double minHeight)
     if(handle&Bottom) r.bottom=clamp(r.bottom+delta.y,r.top+minHeight,1);
     return r;
 }
+inline Rect dragAspect(Rect r,int handle,Point delta,double minWidth,double minHeight)
+{
+    if(handle==Move||!valid(r))return drag(r,handle,delta,minWidth,minHeight);
+    const double w=r.right-r.left,h=r.bottom-r.top;
+    const bool horizontal=handle&(Left|Right),vertical=handle&(Top|Bottom);
+    const double sx=horizontal?((handle&Left)?-delta.x:delta.x)/w:0;
+    const double sy=vertical?((handle&Top)?-delta.y:delta.y)/h:0;
+    double scale=1+(std::abs(sx)>std::abs(sy)?sx:sy);
+    const double ax=(handle&Left)?r.right:(handle&Right)?r.left:(r.left+r.right)/2;
+    const double ay=(handle&Top)?r.bottom:(handle&Bottom)?r.top:(r.top+r.bottom)/2;
+    const double maxX=(handle&Left)?ax/w:(handle&Right)?(1-ax)/w:2*std::min(ax,1-ax)/w;
+    const double maxY=(handle&Top)?ay/h:(handle&Bottom)?(1-ay)/h:2*std::min(ay,1-ay)/h;
+    const double maximum=std::min(maxX,maxY),minimum=std::min(maximum,std::max(minWidth/w,minHeight/h));
+    scale=std::clamp(scale,minimum,maximum);
+    const double nw=w*scale,nh=h*scale;
+    const double left=(handle&Left)?ax-nw:(handle&Right)?ax:ax-nw/2;
+    const double top=(handle&Top)?ay-nh:(handle&Bottom)?ay:ay-nh/2;
+    return {left,top,left+nw,top+nh};
+}
 }

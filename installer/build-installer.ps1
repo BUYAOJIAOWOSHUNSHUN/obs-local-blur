@@ -24,7 +24,7 @@ $source=Join-Path $PSScriptRoot 'Setup.cs'
 $testSource=Join-Path $PSScriptRoot 'InstallerTests.cs'
 $applicationManifest=Join-Path $PSScriptRoot 'setup.manifest'
 $common=@('/nologo','/optimize+','/debug-','/platform:x64','/reference:System.Windows.Forms.dll','/reference:System.Drawing.dll','/reference:System.IO.Compression.dll',"/resource:$zip,payload.zip","/resource:$manifest,payload.sha256","/resource:$license,LICENSE")
-$setup=Join-Path $OutputDirectory 'obs-local-blur-1.6.1-local-r4-setup-x64.exe'
+$setup=Join-Path $OutputDirectory 'obs-local-blur-1.6.1-local-r5-setup-x64.exe'
 & $compiler @common /target:winexe "/win32manifest:$applicationManifest" "/out:$setup" $source
 if($LASTEXITCODE -ne 0){throw 'Installer compilation failed.'}
 $tests=Join-Path $BuildDirectory 'installer-tests.exe'

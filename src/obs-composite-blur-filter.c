@@ -31,9 +31,8 @@ static const char *composite_blur_name(void *unused)
 static void composite_blur_defaults(obs_data_t *settings)
 {
 	obs_data_set_default_double(settings, "radius", 10.0);
-	obs_data_set_default_string(
-		settings, "background",
-		obs_module_text("CompositeBlurFilter.Background.None"));
+	obs_data_set_default_string(settings, "background", "");
+    obs_data_set_default_int(settings, "effect_mask", EFFECT_MASK_TYPE_CROP);
 	obs_data_set_default_int(settings, "passes", 1);
 	obs_data_set_default_int(settings, "kawase_passes", 10);
 	obs_data_set_default_string(
@@ -374,6 +373,24 @@ static void composite_blur_update(void *data, obs_data_t *settings)
 	filter->pixelate_cos_rtheta = (float)cos(-theta);
 
 	filter->mask_type = (int)obs_data_get_int(settings, "effect_mask");
+	/* Preserve old rectangle geometry while reducing the visible mask modes. */
+	if (filter->mask_type == EFFECT_MASK_TYPE_RECT) {
+		const double x = obs_data_get_double(settings, "effect_mask_rect_center_x");
+		const double y = obs_data_get_double(settings, "effect_mask_rect_center_y");
+		const double w = obs_data_get_double(settings, "effect_mask_rect_width");
+		const double h = obs_data_get_double(settings, "effect_mask_rect_height");
+		obs_data_set_double(settings, "effect_mask_crop_left", fmax(0, x-w/2));
+		obs_data_set_double(settings, "effect_mask_crop_right", fmax(0, 100-x-w/2));
+		obs_data_set_double(settings, "effect_mask_crop_top", fmax(0, y-h/2));
+		obs_data_set_double(settings, "effect_mask_crop_bottom", fmax(0, 100-y-h/2));
+		obs_data_set_double(settings, "effect_mask_crop_corner_radius", obs_data_get_double(settings, "effect_mask_rect_corner_radius"));
+		obs_data_set_double(settings, "effect_mask_crop_feathering", obs_data_get_double(settings, "effect_mask_rect_feathering"));
+		obs_data_set_bool(settings, "effect_mask_crop_invert", obs_data_get_bool(settings, "effect_mask_rect_invert"));
+	}
+	if (filter->mask_type != EFFECT_MASK_TYPE_NONE && filter->mask_type != EFFECT_MASK_TYPE_CROP && filter->mask_type != EFFECT_MASK_TYPE_CIRCLE) {
+		filter->mask_type = EFFECT_MASK_TYPE_CROP;
+		obs_data_set_int(settings, "effect_mask", EFFECT_MASK_TYPE_CROP);
+	}
 	filter->mask_crop_top =
 		(float)obs_data_get_double(settings, "effect_mask_crop_top");
 	filter->mask_crop_bot =
@@ -431,7 +448,7 @@ static void composite_blur_update(void *data, obs_data_t *settings)
 	}
 
 	const char *mask_source_name =
-		obs_data_get_string(settings, "effect_mask_source_source");
+		""; /* Removed mask modes must not resolve old sources. */
 
 	filter->has_mask_source = mask_source_name && strlen(mask_source_name);
 
@@ -455,7 +472,7 @@ static void composite_blur_update(void *data, obs_data_t *settings)
 	}
 
 	const char *mask_image_file =
-		obs_data_get_string(settings, "effect_mask_source_file");
+		""; /* Keep saved settings, but do not load unused image files. */
 
 	if (strcmp(mask_image_file, filter->mask_image_path) != 0) {
 		if (filter->mask_image_texture) {
@@ -489,6 +506,9 @@ static void composite_blur_update(void *data, obs_data_t *settings)
 		settings, "effect_mask_circle_center_y");
 	filter->mask_circle_radius = (float)obs_data_get_double(
 		settings, "effect_mask_circle_radius");
+	obs_data_set_default_double(settings, "effect_mask_circle_radius_y", filter->mask_circle_radius);
+	filter->mask_circle_radius_y = obs_data_has_user_value(settings, "effect_mask_circle_radius_y")
+		? (float)obs_data_get_double(settings, "effect_mask_circle_radius_y") : filter->mask_circle_radius;
 	filter->mask_circle_feathering = (float)obs_data_get_double(
 		settings, "effect_mask_circle_feathering");
 	filter->mask_circle_inv =
@@ -553,7 +573,7 @@ static void composite_blur_update(void *data, obs_data_t *settings)
 		filter->vector_blur_source = NULL;
 	}
 
-	const char *source_name = obs_data_get_string(settings, "background");
+	const char *source_name = ""; /* Background composition removed from this edition. */
 
 	filter->has_background_source = (source_name && strlen(source_name));
 
@@ -1084,6 +1104,8 @@ static void apply_effect_mask_circle(composite_blur_filter_data_t *filter)
 	if (filter->param_mask_circle_radius) {
 		gs_effect_set_float(filter->param_mask_circle_radius, radius);
 	}
+	if (filter->param_mask_circle_radius_y)
+		gs_effect_set_float(filter->param_mask_circle_radius_y, filter->mask_circle_radius_y / 100.0f);
 	float feathering = filter->mask_circle_feathering / 100.0f;
 	if (filter->param_mask_circle_feathering) {
 		gs_effect_set_float(filter->param_mask_circle_feathering,
@@ -1107,12 +1129,279 @@ static void apply_effect_mask_circle(composite_blur_filter_data_t *filter)
 	gs_blend_state_pop();
 }
 
+static bool reset_circle_ratio(obs_properties_t *props, obs_property_t *property, void *data)
+{
+	UNUSED_PARAMETER(props);
+	UNUSED_PARAMETER(property);
+	composite_blur_filter_data_t *filter = data;
+	if (!filter || !filter->context) return false;
+	obs_data_t *settings = obs_source_get_settings(filter->context);
+	if (obs_data_get_int(settings, "effect_mask") == EFFECT_MASK_TYPE_CIRCLE) {
+		double rx = obs_data_get_double(settings, "effect_mask_circle_radius");
+		double ry = obs_data_has_user_value(settings, "effect_mask_circle_radius_y")
+			? obs_data_get_double(settings, "effect_mask_circle_radius_y") : rx;
+		double radius = fmin(rx, ry);
+		if (!isfinite(radius) || radius <= 0.0) radius = 20.0;
+		radius = fmin(radius, 500.0);
+		obs_data_set_double(settings, "effect_mask_circle_radius", radius);
+		obs_data_set_double(settings, "effect_mask_circle_radius_y", radius);
+		obs_source_update(filter->context, settings);
+		obs_source_update_properties(filter->context);
+	}
+	obs_data_release(settings);
+	return false; /* Source update_properties refreshes the properties settings copy. */
+}
+
 static obs_properties_t *composite_blur_properties(void *data)
 {
 	composite_blur_filter_data_t *filter = data;
 
 	obs_properties_t *props = obs_properties_create();
 	obs_properties_set_param(props, filter, NULL);
+
+	obs_properties_add_text(props, "cb_mask_section",
+		"模糊区域参数", OBS_TEXT_INFO);
+	obs_property_t *effect_mask_list = obs_properties_add_list(
+		props, "effect_mask",
+		obs_module_text("CompositeBlurFilter.EffectMask"),
+		OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+
+	obs_property_list_add_int(effect_mask_list,
+				  obs_module_text(EFFECT_MASK_TYPE_NONE_LABEL),
+				  EFFECT_MASK_TYPE_NONE);
+	obs_property_list_add_int(effect_mask_list,
+				  obs_module_text(EFFECT_MASK_TYPE_CROP_LABEL),
+				  EFFECT_MASK_TYPE_CROP);
+	obs_property_list_add_int(
+		effect_mask_list,
+		obs_module_text(EFFECT_MASK_TYPE_CIRCLE_LABEL),
+		EFFECT_MASK_TYPE_CIRCLE);
+
+	obs_property_set_modified_callback(effect_mask_list,
+					   setting_effect_mask_modified);
+
+	obs_properties_t *effect_mask_circle = obs_properties_create();
+	if (filter && filter->context) {
+		char marker[256];
+		snprintf(marker, sizeof(marker), "<span><!--cb-crop-editor:%s--></span>", obs_source_get_uuid(filter->context));
+		obs_properties_add_text(effect_mask_circle, "cb_circle_editor", marker, OBS_TEXT_INFO);
+	}
+
+	obs_properties_add_float_slider(
+		effect_mask_circle, "effect_mask_circle_center_x",
+		obs_module_text(
+			"CompositeBlurFilter.EffectMask.Circle.CenterX"),
+		-500.01, 600.01, 0.01);
+
+	obs_properties_add_float_slider(
+		effect_mask_circle, "effect_mask_circle_center_y",
+		obs_module_text(
+			"CompositeBlurFilter.EffectMask.Circle.CenterY"),
+		-500.01, 600.01, 0.01);
+
+	obs_properties_add_float_slider(
+		effect_mask_circle, "effect_mask_circle_radius",
+		obs_module_text("CompositeBlurFilter.EffectMask.Circle.Radius"),
+		0.0, 500.01, 0.01);
+	obs_properties_add_float_slider(effect_mask_circle, "effect_mask_circle_radius_y",
+		"垂直半径 (%)", 0.0, 500.01, 0.01);
+	obs_properties_add_button2(effect_mask_circle, "effect_mask_circle_reset",
+		"恢复正圆", reset_circle_ratio, filter);
+
+	obs_properties_add_float_slider(
+		effect_mask_circle, "effect_mask_circle_feathering",
+		obs_module_text(
+			"CompositeBlurFilter.EffectMask.Circle.Feathering"),
+		0.0, 100.01, 0.01);
+
+	obs_properties_add_bool(
+		effect_mask_circle, "effect_mask_circle_invert",
+		obs_module_text("CompositeBlurFilter.EffectMask.Invert"));
+
+	obs_properties_add_group(
+		props, "effect_mask_circle",
+		obs_module_text(
+			"CompositeBlurFilter.EffectMask.CircleParameters"),
+		OBS_GROUP_NORMAL, effect_mask_circle);
+
+	obs_properties_t *effect_mask_rect = obs_properties_create();
+
+	obs_properties_add_float_slider(
+		effect_mask_rect, "effect_mask_rect_center_x",
+		obs_module_text("CompositeBlurFilter.EffectMask.Rect.CenterX"),
+		-500.01, 600.01, 0.01);
+
+	obs_properties_add_float_slider(
+		effect_mask_rect, "effect_mask_rect_center_y",
+		obs_module_text("CompositeBlurFilter.EffectMask.Rect.CenterY"),
+		-500.01, 600.01, 0.01);
+
+	obs_properties_add_float_slider(
+		effect_mask_rect, "effect_mask_rect_width",
+		obs_module_text("CompositeBlurFilter.EffectMask.Rect.Width"),
+		0.0, 500.01, 0.01);
+
+	obs_properties_add_float_slider(
+		effect_mask_rect, "effect_mask_rect_height",
+		obs_module_text("CompositeBlurFilter.EffectMask.Rect.Height"),
+		0.0, 500.01, 0.01);
+
+	obs_properties_add_float_slider(
+		effect_mask_rect, "effect_mask_rect_corner_radius",
+		obs_module_text(
+			"CompositeBlurFilter.EffectMask.Rect.CornerRadius"),
+		0.0, 100.01, 0.01);
+
+	obs_properties_add_float_slider(
+		effect_mask_rect, "effect_mask_rect_feathering",
+		obs_module_text(
+			"CompositeBlurFilter.EffectMask.Rect.Feathering"),
+		0.0, 100.01, 0.01);
+
+	obs_properties_add_bool(
+		effect_mask_rect, "effect_mask_rect_invert",
+		obs_module_text("CompositeBlurFilter.EffectMask.Invert"));
+
+	obs_properties_add_group(
+		props, "effect_mask_rect",
+		obs_module_text(
+			"CompositeBlurFilter.EffectMask.RectParameters"),
+		OBS_GROUP_NORMAL, effect_mask_rect);
+
+	obs_properties_t *effect_mask_source = obs_properties_create();
+
+	obs_properties_add_path(
+		effect_mask_source, "effect_mask_source_file",
+		obs_module_text("CompositeBlurFilter.EffectMask.Source.File"),
+		OBS_PATH_FILE,
+		"Textures (*.bmp *.tga *.png *.jpeg *.jpg *.gif);;", NULL);
+
+	obs_property_t *effect_mask_source_source = obs_properties_add_list(
+		effect_mask_source, "effect_mask_source_source",
+		obs_module_text("CompositeBlurFilter.EffectMask.Source.Source"),
+		OBS_COMBO_TYPE_EDITABLE, OBS_COMBO_FORMAT_STRING);
+	obs_enum_sources(add_source_to_list, effect_mask_source_source);
+	obs_enum_scenes(add_source_to_list, effect_mask_source_source);
+	obs_property_list_insert_string(
+		effect_mask_source_source, 0,
+		obs_module_text("CompositeBlurFilter.EffectMask.Source.None"),
+		"");
+
+	obs_property_t *effect_mask_source_filter_list = obs_properties_add_list(
+		effect_mask_source, "effect_mask_source_filter_list",
+		obs_module_text("CompositeBlurFilter.EffectMask.Source.Filter"),
+		OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+
+	obs_property_list_add_int(
+		effect_mask_source_filter_list,
+		obs_module_text(EFFECT_MASK_SOURCE_FILTER_ALPHA_LABEL),
+		EFFECT_MASK_SOURCE_FILTER_ALPHA);
+	obs_property_list_add_int(
+		effect_mask_source_filter_list,
+		obs_module_text(EFFECT_MASK_SOURCE_FILTER_GRAYSCALE_LABEL),
+		EFFECT_MASK_SOURCE_FILTER_GRAYSCALE);
+	obs_property_list_add_int(
+		effect_mask_source_filter_list,
+		obs_module_text(EFFECT_MASK_SOURCE_FILTER_LUMINOSITY_LABEL),
+		EFFECT_MASK_SOURCE_FILTER_LUMINOSITY);
+	obs_property_list_add_int(
+		effect_mask_source_filter_list,
+		obs_module_text(EFFECT_MASK_SOURCE_FILTER_SLIDERS_LABEL),
+		EFFECT_MASK_SOURCE_FILTER_SLIDERS);
+
+	obs_property_set_modified_callback(
+		effect_mask_source_filter_list,
+		setting_effect_mask_source_filter_modified);
+
+	obs_properties_add_float_slider(
+		effect_mask_source, "effect_mask_source_filter_red",
+		obs_module_text("CompositeBlurFilter.Channel.Red"), -100.01,
+		100.01, 0.01);
+
+	obs_properties_add_float_slider(
+		effect_mask_source, "effect_mask_source_filter_green",
+		obs_module_text("CompositeBlurFilter.Channel.Green"), -100.01,
+		100.01, 0.01);
+
+	obs_properties_add_float_slider(
+		effect_mask_source, "effect_mask_source_filter_blue",
+		obs_module_text("CompositeBlurFilter.Channel.Blue"), -100.01,
+		100.01, 0.01);
+
+	obs_properties_add_float_slider(
+		effect_mask_source, "effect_mask_source_filter_alpha",
+		obs_module_text("CompositeBlurFilter.Channel.Alpha"), -100.01,
+		100.01, 0.01);
+
+	obs_properties_add_float_slider(
+		effect_mask_source, "effect_mask_source_filter_multiplier",
+		obs_module_text(
+			"CompositeBlurFilter.EffectMask.Source.Multiplier"),
+		-100.01, 100.01, 0.01);
+
+	obs_properties_add_bool(
+		effect_mask_source, "effect_mask_source_invert",
+		obs_module_text("CompositeBlurFilter.EffectMask.Invert"));
+
+	obs_properties_add_group(
+		props, "effect_mask_source",
+		obs_module_text(
+			"CompositeBlurFilter.EffectMask.SourceParameters"),
+		OBS_GROUP_NORMAL, effect_mask_source);
+
+	obs_properties_t *effect_mask_crop = obs_properties_create();
+	/* The UI adapter binds by UUID, never by a translated or user-edited name.
+	 * Keep the original four properties as a fallback on unsupported hosts. */
+	if (filter && filter->context) {
+		char marker[256];
+		snprintf(marker, sizeof(marker), "<span>拖动预览框移动或缩放范围。<!--cb-crop-editor:%s--></span>",
+			 obs_source_get_uuid(filter->context));
+		obs_properties_add_text(effect_mask_crop, "cb_crop_editor",
+					marker, OBS_TEXT_INFO);
+	}
+
+	obs_properties_add_float_slider(
+		effect_mask_crop, "effect_mask_crop_top",
+		obs_module_text("CompositeBlurFilter.EffectMask.Crop.Top"), 0.0,
+		100.01, 0.01);
+
+	obs_properties_add_float_slider(
+		effect_mask_crop, "effect_mask_crop_bottom",
+		obs_module_text("CompositeBlurFilter.EffectMask.Crop.Bottom"),
+		0.0, 100.01, 0.01);
+
+	obs_properties_add_float_slider(
+		effect_mask_crop, "effect_mask_crop_left",
+		obs_module_text("CompositeBlurFilter.EffectMask.Crop.Left"),
+		0.0, 100.01, 0.01);
+
+	obs_properties_add_float_slider(
+		effect_mask_crop, "effect_mask_crop_right",
+		obs_module_text("CompositeBlurFilter.EffectMask.Crop.Right"),
+		0.0, 100.01, 0.01);
+
+	obs_properties_add_float_slider(
+		effect_mask_crop, "effect_mask_crop_corner_radius",
+		obs_module_text("CompositeBlurFilter.EffectMask.CornerRadius"),
+		0.0, 50.01, 0.01);
+
+	obs_properties_add_float_slider(
+		effect_mask_crop, "effect_mask_crop_feathering",
+		obs_module_text("CompositeBlurFilter.EffectMask.Feathering"),
+		0.0, 100.01, 0.01);
+
+	obs_properties_add_bool(
+		effect_mask_crop, "effect_mask_crop_invert",
+		obs_module_text("CompositeBlurFilter.EffectMask.Invert"));
+
+	obs_properties_add_group(
+		props, "effect_mask_crop",
+		obs_module_text(
+			"CompositeBlurFilter.EffectMask.CropParameters"),
+		OBS_GROUP_NORMAL, effect_mask_crop);
+
+	obs_properties_add_text(props, "cb_effect_section",
+		"马赛克样式参数", OBS_TEXT_INFO);
 
 	obs_property_t *blur_algorithms = obs_properties_add_list(
 		props, "blur_algorithm",
@@ -1377,258 +1666,10 @@ static obs_properties_t *composite_blur_properties(void *data)
 		obs_module_text("CompositeBlurFilter.TiltShift"),
 		OBS_GROUP_NORMAL, tilt_shift_bounds);
 
-	p = obs_properties_add_list(
-		props, "background",
-		obs_module_text("CompositeBlurFilter.Background"),
-		OBS_COMBO_TYPE_EDITABLE, OBS_COMBO_FORMAT_STRING);
-	obs_enum_sources(add_source_to_list, p);
-	obs_enum_scenes(add_source_to_list, p);
-	obs_property_list_insert_string(
-		p, 0, obs_module_text("CompositeBlurFilter.Background.None"),
-		"");
-
-	obs_property_t *effect_mask_list = obs_properties_add_list(
-		props, "effect_mask",
-		obs_module_text("CompositeBlurFilter.EffectMask"),
-		OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
-
-	obs_property_list_add_int(effect_mask_list,
-				  obs_module_text(EFFECT_MASK_TYPE_NONE_LABEL),
-				  EFFECT_MASK_TYPE_NONE);
-	obs_property_list_add_int(effect_mask_list,
-				  obs_module_text(EFFECT_MASK_TYPE_CROP_LABEL),
-				  EFFECT_MASK_TYPE_CROP);
-	obs_property_list_add_int(
-		effect_mask_list,
-		obs_module_text(EFFECT_MASK_TYPE_SOURCE_LABEL),
-		EFFECT_MASK_TYPE_SOURCE);
-	obs_property_list_add_int(effect_mask_list,
-				  obs_module_text(EFFECT_MASK_TYPE_IMAGE_LABEL),
-				  EFFECT_MASK_TYPE_IMAGE);
-	obs_property_list_add_int(effect_mask_list,
-				  obs_module_text(EFFECT_MASK_TYPE_RECT_LABEL),
-				  EFFECT_MASK_TYPE_RECT);
-	obs_property_list_add_int(
-		effect_mask_list,
-		obs_module_text(EFFECT_MASK_TYPE_CIRCLE_LABEL),
-		EFFECT_MASK_TYPE_CIRCLE);
-
-	obs_property_set_modified_callback(effect_mask_list,
-					   setting_effect_mask_modified);
-
-	obs_properties_t *effect_mask_circle = obs_properties_create();
-
-	obs_properties_add_float_slider(
-		effect_mask_circle, "effect_mask_circle_center_x",
-		obs_module_text(
-			"CompositeBlurFilter.EffectMask.Circle.CenterX"),
-		-500.01, 600.01, 0.01);
-
-	obs_properties_add_float_slider(
-		effect_mask_circle, "effect_mask_circle_center_y",
-		obs_module_text(
-			"CompositeBlurFilter.EffectMask.Circle.CenterY"),
-		-500.01, 600.01, 0.01);
-
-	obs_properties_add_float_slider(
-		effect_mask_circle, "effect_mask_circle_radius",
-		obs_module_text("CompositeBlurFilter.EffectMask.Circle.Radius"),
-		0.0, 500.01, 0.01);
-
-	obs_properties_add_float_slider(
-		effect_mask_circle, "effect_mask_circle_feathering",
-		obs_module_text(
-			"CompositeBlurFilter.EffectMask.Circle.Feathering"),
-		0.0, 100.01, 0.01);
-
-	obs_properties_add_bool(
-		effect_mask_circle, "effect_mask_circle_invert",
-		obs_module_text("CompositeBlurFilter.EffectMask.Invert"));
-
-	obs_properties_add_group(
-		props, "effect_mask_circle",
-		obs_module_text(
-			"CompositeBlurFilter.EffectMask.CircleParameters"),
-		OBS_GROUP_NORMAL, effect_mask_circle);
-
-	obs_properties_t *effect_mask_rect = obs_properties_create();
-
-	obs_properties_add_float_slider(
-		effect_mask_rect, "effect_mask_rect_center_x",
-		obs_module_text("CompositeBlurFilter.EffectMask.Rect.CenterX"),
-		-500.01, 600.01, 0.01);
-
-	obs_properties_add_float_slider(
-		effect_mask_rect, "effect_mask_rect_center_y",
-		obs_module_text("CompositeBlurFilter.EffectMask.Rect.CenterY"),
-		-500.01, 600.01, 0.01);
-
-	obs_properties_add_float_slider(
-		effect_mask_rect, "effect_mask_rect_width",
-		obs_module_text("CompositeBlurFilter.EffectMask.Rect.Width"),
-		0.0, 500.01, 0.01);
-
-	obs_properties_add_float_slider(
-		effect_mask_rect, "effect_mask_rect_height",
-		obs_module_text("CompositeBlurFilter.EffectMask.Rect.Height"),
-		0.0, 500.01, 0.01);
-
-	obs_properties_add_float_slider(
-		effect_mask_rect, "effect_mask_rect_corner_radius",
-		obs_module_text(
-			"CompositeBlurFilter.EffectMask.Rect.CornerRadius"),
-		0.0, 100.01, 0.01);
-
-	obs_properties_add_float_slider(
-		effect_mask_rect, "effect_mask_rect_feathering",
-		obs_module_text(
-			"CompositeBlurFilter.EffectMask.Rect.Feathering"),
-		0.0, 100.01, 0.01);
-
-	obs_properties_add_bool(
-		effect_mask_rect, "effect_mask_rect_invert",
-		obs_module_text("CompositeBlurFilter.EffectMask.Invert"));
-
-	obs_properties_add_group(
-		props, "effect_mask_rect",
-		obs_module_text(
-			"CompositeBlurFilter.EffectMask.RectParameters"),
-		OBS_GROUP_NORMAL, effect_mask_rect);
-
-	obs_properties_t *effect_mask_source = obs_properties_create();
-
-	obs_properties_add_path(
-		effect_mask_source, "effect_mask_source_file",
-		obs_module_text("CompositeBlurFilter.EffectMask.Source.File"),
-		OBS_PATH_FILE,
-		"Textures (*.bmp *.tga *.png *.jpeg *.jpg *.gif);;", NULL);
-
-	obs_property_t *effect_mask_source_source = obs_properties_add_list(
-		effect_mask_source, "effect_mask_source_source",
-		obs_module_text("CompositeBlurFilter.EffectMask.Source.Source"),
-		OBS_COMBO_TYPE_EDITABLE, OBS_COMBO_FORMAT_STRING);
-	obs_enum_sources(add_source_to_list, effect_mask_source_source);
-	obs_enum_scenes(add_source_to_list, effect_mask_source_source);
-	obs_property_list_insert_string(
-		effect_mask_source_source, 0,
-		obs_module_text("CompositeBlurFilter.EffectMask.Source.None"),
-		"");
-
-	obs_property_t *effect_mask_source_filter_list = obs_properties_add_list(
-		effect_mask_source, "effect_mask_source_filter_list",
-		obs_module_text("CompositeBlurFilter.EffectMask.Source.Filter"),
-		OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
-
-	obs_property_list_add_int(
-		effect_mask_source_filter_list,
-		obs_module_text(EFFECT_MASK_SOURCE_FILTER_ALPHA_LABEL),
-		EFFECT_MASK_SOURCE_FILTER_ALPHA);
-	obs_property_list_add_int(
-		effect_mask_source_filter_list,
-		obs_module_text(EFFECT_MASK_SOURCE_FILTER_GRAYSCALE_LABEL),
-		EFFECT_MASK_SOURCE_FILTER_GRAYSCALE);
-	obs_property_list_add_int(
-		effect_mask_source_filter_list,
-		obs_module_text(EFFECT_MASK_SOURCE_FILTER_LUMINOSITY_LABEL),
-		EFFECT_MASK_SOURCE_FILTER_LUMINOSITY);
-	obs_property_list_add_int(
-		effect_mask_source_filter_list,
-		obs_module_text(EFFECT_MASK_SOURCE_FILTER_SLIDERS_LABEL),
-		EFFECT_MASK_SOURCE_FILTER_SLIDERS);
-
-	obs_property_set_modified_callback(
-		effect_mask_source_filter_list,
-		setting_effect_mask_source_filter_modified);
-
-	obs_properties_add_float_slider(
-		effect_mask_source, "effect_mask_source_filter_red",
-		obs_module_text("CompositeBlurFilter.Channel.Red"), -100.01,
-		100.01, 0.01);
-
-	obs_properties_add_float_slider(
-		effect_mask_source, "effect_mask_source_filter_green",
-		obs_module_text("CompositeBlurFilter.Channel.Green"), -100.01,
-		100.01, 0.01);
-
-	obs_properties_add_float_slider(
-		effect_mask_source, "effect_mask_source_filter_blue",
-		obs_module_text("CompositeBlurFilter.Channel.Blue"), -100.01,
-		100.01, 0.01);
-
-	obs_properties_add_float_slider(
-		effect_mask_source, "effect_mask_source_filter_alpha",
-		obs_module_text("CompositeBlurFilter.Channel.Alpha"), -100.01,
-		100.01, 0.01);
-
-	obs_properties_add_float_slider(
-		effect_mask_source, "effect_mask_source_filter_multiplier",
-		obs_module_text(
-			"CompositeBlurFilter.EffectMask.Source.Multiplier"),
-		-100.01, 100.01, 0.01);
-
-	obs_properties_add_bool(
-		effect_mask_source, "effect_mask_source_invert",
-		obs_module_text("CompositeBlurFilter.EffectMask.Invert"));
-
-	obs_properties_add_group(
-		props, "effect_mask_source",
-		obs_module_text(
-			"CompositeBlurFilter.EffectMask.SourceParameters"),
-		OBS_GROUP_NORMAL, effect_mask_source);
-
-	obs_properties_t *effect_mask_crop = obs_properties_create();
-	/* The UI adapter binds by UUID, never by a translated or user-edited name.
-	 * Keep the original four properties as a fallback on unsupported hosts. */
-	if (filter && filter->context) {
-		char marker[256];
-		snprintf(marker, sizeof(marker), "<span>拖动预览框移动或缩放范围。<!--cb-crop-editor:%s--></span>",
-			 obs_source_get_uuid(filter->context));
-		obs_properties_add_text(effect_mask_crop, "cb_crop_editor",
-					marker, OBS_TEXT_INFO);
-	}
-
-	obs_properties_add_float_slider(
-		effect_mask_crop, "effect_mask_crop_top",
-		obs_module_text("CompositeBlurFilter.EffectMask.Crop.Top"), 0.0,
-		100.01, 0.01);
-
-	obs_properties_add_float_slider(
-		effect_mask_crop, "effect_mask_crop_bottom",
-		obs_module_text("CompositeBlurFilter.EffectMask.Crop.Bottom"),
-		0.0, 100.01, 0.01);
-
-	obs_properties_add_float_slider(
-		effect_mask_crop, "effect_mask_crop_left",
-		obs_module_text("CompositeBlurFilter.EffectMask.Crop.Left"),
-		0.0, 100.01, 0.01);
-
-	obs_properties_add_float_slider(
-		effect_mask_crop, "effect_mask_crop_right",
-		obs_module_text("CompositeBlurFilter.EffectMask.Crop.Right"),
-		0.0, 100.01, 0.01);
-
-	obs_properties_add_float_slider(
-		effect_mask_crop, "effect_mask_crop_corner_radius",
-		obs_module_text("CompositeBlurFilter.EffectMask.CornerRadius"),
-		0.0, 50.01, 0.01);
-
-	obs_properties_add_float_slider(
-		effect_mask_crop, "effect_mask_crop_feathering",
-		obs_module_text("CompositeBlurFilter.EffectMask.Feathering"),
-		0.0, 100.01, 0.01);
-
-	obs_properties_add_bool(
-		effect_mask_crop, "effect_mask_crop_invert",
-		obs_module_text("CompositeBlurFilter.EffectMask.Invert"));
-
-	obs_properties_add_group(
-		props, "effect_mask_crop",
-		obs_module_text(
-			"CompositeBlurFilter.EffectMask.CropParameters"),
-		OBS_GROUP_NORMAL, effect_mask_crop);
-
 	obs_properties_add_text(props, "plugin_info", PLUGIN_INFO,
 				OBS_TEXT_INFO);
+	obs_properties_remove_by_name(props, "effect_mask_rect");
+	obs_properties_remove_by_name(props, "effect_mask_source");
 
 	return props;
 }
@@ -1912,6 +1953,7 @@ static void setting_visibility(const char *prop_name, bool visible,
 			       obs_properties_t *props)
 {
 	obs_property_t *p = obs_properties_get(props, prop_name);
+	if (!p) return;
 	obs_property_set_enabled(p, visible);
 	obs_property_set_visible(p, visible);
 }
@@ -2164,7 +2206,7 @@ static void load_composite_effect(composite_blur_filter_data_t *filter)
 	char *errors = NULL;
 
 	obs_enter_graphics();
-	filter->composite_effect = gs_effect_create(shader_text, NULL, &errors);
+	filter->composite_effect = shader_text ? gs_effect_create(shader_text, NULL, &errors) : NULL;
 	obs_leave_graphics();
 
 	bfree(shader_text);
@@ -2209,7 +2251,7 @@ static void load_crop_mask_effect(composite_blur_filter_data_t *filter)
 
 	obs_enter_graphics();
 	filter->effect_mask_effect =
-		gs_effect_create(shader_text, NULL, &errors);
+		shader_text ? gs_effect_create(shader_text, NULL, &errors) : NULL;
 	obs_leave_graphics();
 
 	bfree(shader_text);
@@ -2267,7 +2309,7 @@ static void load_source_mask_effect(composite_blur_filter_data_t *filter)
 
 	obs_enter_graphics();
 	filter->effect_mask_effect =
-		gs_effect_create(shader_text, NULL, &errors);
+		shader_text ? gs_effect_create(shader_text, NULL, &errors) : NULL;
 	obs_leave_graphics();
 
 	bfree(shader_text);
@@ -2303,6 +2345,14 @@ static void load_source_mask_effect(composite_blur_filter_data_t *filter)
 
 static void load_circle_mask_effect(composite_blur_filter_data_t *filter)
 {
+	/* Cached parameters belong to the old effect and must never survive reload. */
+	filter->param_filtered_image = NULL;
+	filter->param_mask_circle_inv = NULL;
+	filter->param_mask_circle_center = NULL;
+	filter->param_mask_circle_radius = NULL;
+	filter->param_mask_circle_radius_y = NULL;
+	filter->param_mask_circle_feathering = NULL;
+	filter->param_mask_circle_uv_scale = NULL;
 	if (filter->effect_mask_effect != NULL) {
 		obs_enter_graphics();
 		gs_effect_destroy(filter->effect_mask_effect);
@@ -2320,7 +2370,7 @@ static void load_circle_mask_effect(composite_blur_filter_data_t *filter)
 
 	obs_enter_graphics();
 	filter->effect_mask_effect =
-		gs_effect_create(shader_text, NULL, &errors);
+		shader_text ? gs_effect_create(shader_text, NULL, &errors) : NULL;
 	obs_leave_graphics();
 
 	bfree(shader_text);
@@ -2347,6 +2397,8 @@ static void load_circle_mask_effect(composite_blur_filter_data_t *filter)
 				filter->param_mask_circle_center = param;
 			} else if (strcmp(info.name, "circle_radius") == 0) {
 				filter->param_mask_circle_radius = param;
+			} else if (strcmp(info.name, "circle_radius_y") == 0) {
+				filter->param_mask_circle_radius_y = param;
 			} else if (strcmp(info.name, "feathering") == 0) {
 				filter->param_mask_circle_feathering = param;
 			} else if (strcmp(info.name, "uv_scale") == 0) {
@@ -2374,7 +2426,7 @@ static void load_mix_effect(composite_blur_filter_data_t *filter)
 	dstr_free(&filename);
 
 	obs_enter_graphics();
-	filter->mix_effect = gs_effect_create(shader_text, NULL, &errors);
+	filter->mix_effect = shader_text ? gs_effect_create(shader_text, NULL, &errors) : NULL;
 	obs_leave_graphics();
 
 	bfree(shader_text);
@@ -2415,7 +2467,7 @@ static void load_output_effect(composite_blur_filter_data_t *filter)
 	dstr_free(&filename);
 
 	obs_enter_graphics();
-	filter->output_effect = gs_effect_create(shader_text, NULL, &errors);
+	filter->output_effect = shader_text ? gs_effect_create(shader_text, NULL, &errors) : NULL;
 	obs_leave_graphics();
 
 	bfree(shader_text);

@@ -15,7 +15,7 @@ using Microsoft.Win32.SafeHandles;
 using System.Windows.Forms;
 using Microsoft.Win32;
 [assembly: AssemblyTitle("局部打码插件安装程序")]
-[assembly: AssemblyDescription("Composite Blur 1.6.1 可视裁剪与安全修复版")]
+[assembly: AssemblyDescription("Composite Blur 1.6.1 矩形与椭圆九点编辑版 r5")]
 [assembly: AssemblyCompany("不要叫我顺顺 / upstream FiniteSingularity")]
 [assembly: AssemblyVersion("1.6.1.0")]
 [assembly: AssemblyFileVersion("1.6.1.0")]
@@ -169,7 +169,7 @@ internal sealed class SetupForm : Form
         previewMode = exampleDirectory != null;
         Text = "OBS局部打码插件 · 安装 / 更新"; Font = new Font("Microsoft YaHei UI", 10); ClientSize = new Size(650, 470);
         FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = false; StartPosition = FormStartPosition.CenterScreen;
-        var title = new Label { Text = "局部打码 1.6.1 · 可视裁剪与安全修复版", AutoSize = true, Location = new Point(22, 20), Font = new Font(Font.FontFamily, 15, FontStyle.Bold) }; Controls.Add(title);
+        var title = new Label { Text = "局部打码 1.6.1 r5 · 矩形与椭圆可视编辑", AutoSize = true, Location = new Point(22, 20), Font = new Font(Font.FontFamily, 15, FontStyle.Bold) }; Controls.Add(title);
         Controls.Add(new Label { Text = "版本功能优化：不要叫我顺顺\n基于 FiniteSingularity 的 Composite Blur 1.6.1 · GPL-2.0\n适用于 Windows x64 / OBS 32.2.2", Location = new Point(24, 65), Size = new Size(600, 78) });
         Controls.Add(new Label { Text = "OBS 安装目录（不是 obs-plugins 子目录）", Location = new Point(24, 150), AutoSize = true });
         folder.SetBounds(24, 180, 500, 30); folder.Text = exampleDirectory ?? Installer.DetectObs(); Controls.Add(folder);

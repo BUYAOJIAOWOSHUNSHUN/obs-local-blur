@@ -87,7 +87,7 @@ gs_effect_t *load_shader_effect(gs_effect_t *effect,
 	char *errors = NULL;
 
 	obs_enter_graphics();
-	effect = gs_effect_create(shader_text, NULL, &errors);
+	effect = shader_text ? gs_effect_create(shader_text, NULL, &errors) : NULL;
 	obs_leave_graphics();
 
 	bfree(shader_text);
@@ -105,48 +105,58 @@ gs_effect_t *load_shader_effect(gs_effect_t *effect,
 	return effect;
 }
 
-// Performs loading of shader from file.  Properly includes #include directives.
-char *load_shader_from_file(const char *file_name)
+/* Limit both recursion and total input: corrupt includes must fail cleanly. */
+static char *load_shader_recursive(const char *file_name, unsigned depth, size_t *budget)
 {
-	char *file = os_quick_read_utf8_file(file_name);
-	if (file == NULL)
-		return NULL;
+	const size_t file_limit = 1024 * 1024;
+	if (!file_name || depth >= 16 || !*budget) return NULL;
+	FILE *stream = os_fopen(file_name, "rb");
+	if (!stream) return NULL;
+	size_t limit = *budget < file_limit ? *budget : file_limit;
+	char *file = bmalloc(limit + 1);
+	size_t count = fread(file, 1, limit, stream);
+	bool failed = ferror(stream) || fgetc(stream) != EOF;
+	fclose(stream);
+	if (failed) { bfree(file); return NULL; }
+	file[count] = 0;
+	*budget -= count;
 	char **lines = strlist_split(file, '\n', true);
-	struct dstr shader_file;
-	dstr_init(&shader_file);
-
-	size_t line_i = 0;
-	while (lines[line_i] != NULL) {
-		char *line = lines[line_i];
-		line_i++;
+	struct dstr shader_file = {0};
+	for (size_t i = 0; lines[i]; ++i) {
+		const char *line = lines[i];
+		if (i == 0 && strncmp(line, "\xEF\xBB\xBF", 3) == 0) line += 3;
+		while (*line == ' ' || *line == '\t') ++line;
 		if (strncmp(line, "#include", 8) == 0) {
-			// Open the included file, place contents here.
-			const char *pos = strrchr(file_name, '/');
-			const size_t length = pos - file_name + 1;
-			struct dstr include_path = {0};
-			dstr_ncopy(&include_path, file_name, length);
-			char *start = strchr(line, '"') + 1;
-			char *end = strrchr(line, '"');
-
-			dstr_ncat(&include_path, start, end - start);
-			char *abs_include_path =
-				os_get_abs_path_ptr(include_path.array);
-			char *file_contents =
-				load_shader_from_file(abs_include_path);
-			dstr_cat(&shader_file, file_contents);
-			dstr_cat(&shader_file, "\n");
-			bfree(abs_include_path);
-			bfree(file_contents);
-			dstr_free(&include_path);
+			const char *start = strchr(line, '"');
+			const char *end = start ? strchr(start + 1, '"') : NULL;
+			if (!start || !end || end == start + 1) { failed = true; break; }
+			const char *slash = strrchr(file_name, '/');
+			const char *backslash = strrchr(file_name, '\\');
+			if (!slash || (backslash && backslash > slash)) slash = backslash;
+			struct dstr path = {0};
+			if (slash) dstr_ncopy(&path, file_name, slash - file_name + 1);
+			dstr_ncat(&path, start + 1, end - start - 1);
+			char *included = load_shader_recursive(path.array, depth + 1, budget);
+			dstr_free(&path);
+			if (!included) { failed = true; break; }
+			dstr_cat(&shader_file, included);
+			bfree(included);
 		} else {
-			// else place current line here.
 			dstr_cat(&shader_file, line);
-			dstr_cat(&shader_file, "\n");
 		}
+		dstr_cat(&shader_file, "\n");
+		if (shader_file.len > 8 * 1024 * 1024) { failed = true; break; }
 	}
-
 	bfree(file);
 	strlist_free(lines);
+	if (failed) { dstr_free(&shader_file); return NULL; }
+	return shader_file.array ? shader_file.array : bstrdup("");
+}
 
-	return shader_file.array;
+char *load_shader_from_file(const char *file_name)
+{
+	size_t budget = 8 * 1024 * 1024;
+	char *shader = load_shader_recursive(file_name, 0, &budget);
+	if (!shader) blog(LOG_WARNING, "[obs-composite-blur] Shader missing, malformed, or include limit exceeded.");
+	return shader;
 }

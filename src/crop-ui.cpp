@@ -20,19 +20,42 @@
 #include <QTimer>
 #include <QWindow>
 #include <mutex>
+#include <array>
 
 namespace {
 constexpr const char *filterId="obs_composite_blur";
 const QString markerPrefix=QStringLiteral("cb-crop-editor:");
+int maskMode(obs_source_t *filter)
+{ OBSDataAutoRelease s=obs_source_get_settings(filter);return int(obs_data_get_int(s,"effect_mask")); }
 crop::Rect readCrop(obs_source_t *filter)
 {
     OBSDataAutoRelease s=obs_source_get_settings(filter);
+    if(obs_data_get_int(s,"effect_mask")==3) {
+        auto *parent=obs_filter_get_parent(filter);
+        const double w=parent?obs_source_get_width(parent):0,h=parent?obs_source_get_height(parent):0;
+        if(w<=0||h<=0)return {0,0,0,0};
+        const double x=obs_data_get_double(s,"effect_mask_circle_center_x")/100,y=obs_data_get_double(s,"effect_mask_circle_center_y")/100;
+        const double radius=obs_data_get_double(s,"effect_mask_circle_radius");
+        const double ry=obs_data_has_user_value(s,"effect_mask_circle_radius_y")?obs_data_get_double(s,"effect_mask_circle_radius_y"):radius;
+        const double dx=radius/100*std::min(w,h)/w,dy=ry/100*std::min(w,h)/h;
+        return {x-dx,y-dy,x+dx,y+dy};
+    }
     return crop::fromMargins(obs_data_get_double(s,"effect_mask_crop_left"),obs_data_get_double(s,"effect_mask_crop_top"),
         obs_data_get_double(s,"effect_mask_crop_right"),obs_data_get_double(s,"effect_mask_crop_bottom"));
 }
 void writeCrop(obs_source_t *filter,crop::Rect r)
 {
     OBSDataAutoRelease s=obs_data_create();
+    if(maskMode(filter)==3) {
+        auto *parent=obs_filter_get_parent(filter);
+        const double w=parent?obs_source_get_width(parent):0,h=parent?obs_source_get_height(parent):0;
+        if(w<=0||h<=0)return;
+        obs_data_set_double(s,"effect_mask_circle_center_x",(r.left+r.right)*50);
+        obs_data_set_double(s,"effect_mask_circle_center_y",(r.top+r.bottom)*50);
+        obs_data_set_double(s,"effect_mask_circle_radius",(r.right-r.left)*50*w/std::min(w,h));
+        obs_data_set_double(s,"effect_mask_circle_radius_y",(r.bottom-r.top)*50*h/std::min(w,h));
+        obs_source_update(filter,s);return;
+    }
     obs_data_set_double(s,"effect_mask_crop_left",r.left*100);
     obs_data_set_double(s,"effect_mask_crop_top",r.top*100);
     obs_data_set_double(s,"effect_mask_crop_right",(1-r.right)*100);
@@ -43,7 +66,7 @@ bool isCrop(obs_source_t *filter)
 {
     if(!filter||obs_source_removed(filter)||strcmp(obs_source_get_unversioned_id(filter),filterId)!=0) return false;
     OBSDataAutoRelease s=obs_source_get_settings(filter);
-    return obs_data_get_int(s,"effect_mask")==1;
+    const auto mode=obs_data_get_int(s,"effect_mask");return mode==1||mode==3;
 }
 
 class CropPreview final:public QWidget {
@@ -51,12 +74,32 @@ class CropPreview final:public QWidget {
     std::mutex stateMutex;
     OBSWeakSource weakFilter,weakParent;
     bool dragging=false;
+    int gestureMode=0;
     int activeHandle=crop::None;
     crop::Point pressPoint={0,0};
     crop::Rect startRect={0,0,1,1};
     OBSWeakSource gestureFilter;
     bool closing=false;
     double pixelRatio=1;
+    static void ellipse(double x,double y,double w,double h,double t,uint32_t color)
+    {
+        auto *effect=obs_get_base_effect(OBS_EFFECT_SOLID);
+        gs_effect_set_color(gs_effect_get_param_by_name(effect,"color"),color);
+        const double rx=w/2,ry=h/2,ix=std::max(0.0,rx-t),iy=std::max(0.0,ry-t);
+        // Shared immutable unit circle: trigonometry runs once, not every frame.
+        static const auto circle=[](){std::array<crop::Point,193> points{};
+            for(size_t i=0;i<points.size();++i){const double a=i*6.283185307179586/192;points[i]={std::cos(a),std::sin(a)};}
+            return points;}();
+        while(gs_effect_loop(effect,"Solid")) {
+            gs_render_start(true);
+            for(const auto &point:circle) {
+                const double dx=point.x,dy=point.y;
+                gs_vertex2f(float(x+rx+rx*dx),float(y+ry+ry*dy));
+                gs_vertex2f(float(x+rx+ix*dx),float(y+ry+iy*dy));
+            }
+            gs_render_stop(GS_TRISTRIP);
+        }
+    }
     static void quad(double x,double y,double w,double h,uint32_t color)
     {
         auto *effect=obs_get_base_effect(OBS_EFFECT_SOLID);
@@ -127,10 +170,16 @@ class CropPreview final:public QWidget {
             const double radius=obs_data_get_double(settings,"effect_mask_crop_corner_radius")/100*std::min(w,h);
             const double t=std::max(1.0,ratio);
             gs_blend_state_push();gs_reset_blend_state();
-            outline(x,y,w,h,radius,t,0xff37d4ff);
+            const bool oval=maskMode(filter)==3;
+            if(oval)ellipse(x,y,w,h,t,0xff37d4ff);
+            else outline(x,y,w,h,radius,t,0xff37d4ff);
             const double handle=8*ratio;
             const crop::Point midpoints[]={{x+w/2,y},{x+w,y+h/2},{x+w/2,y+h},{x,y+h/2}};
             for(const auto &p:midpoints) {
+                quad(p.x-handle/2-t,p.y-handle/2-t,handle+2*t,handle+2*t,0xff101820);
+                quad(p.x-handle/2,p.y-handle/2,handle,handle,0xffe9faff);
+            }
+            if(oval)for(const auto &p:{crop::Point{x,y},crop::Point{x+w,y},crop::Point{x,y+h},crop::Point{x+w,y+h},crop::Point{x+w/2,y+h/2}}) {
                 quad(p.x-handle/2-t,p.y-handle/2-t,handle+2*t,handle+2*t,0xff101820);
                 quad(p.x-handle/2,p.y-handle/2,handle,handle,0xffe9faff);
             }
@@ -160,10 +209,9 @@ class CropPreview final:public QWidget {
         dragging=false;releaseMouse();
         OBSSource f=OBSGetStrongRef(gestureFilter);gestureFilter=nullptr;
         if(f&&!obs_source_removed(f)) {
-            if(cancel) writeCrop(f,startRect);
-            // Refresh the properties view's private settings copy once per gesture,
-            // so a subsequent radius/feather edit cannot restore stale margins.
-            obs_source_update_properties(f);
+            if(cancel&&maskMode(f)==gestureMode) writeCrop(f,startRect);
+            // OBSPropertiesView retains the same obs_data object as the source.
+            // Rebuilding it here would briefly reveal hidden rows and move the panel.
         }
         activeHandle=crop::None;
     }
@@ -192,7 +240,7 @@ protected:
         const auto p=crop::normalized({e->position().x(),e->position().y()},v);
         startRect=readCrop(f);activeHandle=crop::hit(startRect,p,8/(v.right-v.left),8/(v.bottom-v.top));
         if(!activeHandle) return;
-        pressPoint=p;dragging=true;gestureFilter=OBSGetWeakRef(f);setFocus(Qt::MouseFocusReason);grabMouse();e->accept();
+        pressPoint=p;dragging=true;gestureMode=maskMode(f);gestureFilter=OBSGetWeakRef(f);setFocus(Qt::MouseFocusReason);grabMouse();e->accept();
     }
     void mouseMoveEvent(QMouseEvent *e) override
     {
@@ -201,8 +249,11 @@ protected:
         const auto p=crop::normalized({e->position().x(),e->position().y()},v);
         if(dragging) {
             OBSSource gesture=OBSGetStrongRef(gestureFilter);
-            if(gesture!=f){finish(false);return;}
-            const auto r=crop::drag(startRect,activeHandle,{p.x-pressPoint.x,p.y-pressPoint.y},2/(v.right-v.left),2/(v.bottom-v.top));
+            if(gesture!=f||maskMode(f)!=gestureMode){finish(false);return;}
+            const bool corner=(activeHandle&(crop::Left|crop::Right))&&(activeHandle&(crop::Top|crop::Bottom));
+            const bool proportional=gestureMode==3&&(corner||e->modifiers().testFlag(Qt::ShiftModifier));
+            const auto r=proportional?crop::dragAspect(startRect,activeHandle,{p.x-pressPoint.x,p.y-pressPoint.y},2/(v.right-v.left),2/(v.bottom-v.top)):
+                crop::drag(startRect,activeHandle,{p.x-pressPoint.x,p.y-pressPoint.y},2/(v.right-v.left),2/(v.bottom-v.top));
             writeCrop(f,r);e->accept();
         } else updateCursor(crop::hit(readCrop(f),p,8/(v.right-v.left),8/(v.bottom-v.top)));
     }
@@ -240,6 +291,7 @@ public:
         obs_display_add_draw_callback(display,draw,this);return true;
     }
     bool ready() const {return display!=nullptr;}
+    void setRenderingEnabled(bool enabled){if(display)obs_display_set_enabled(display,enabled);}
     // Diagnostic readback of this editor's draw callback. It captures no desktop
     // windows and uses the same GPU drawing path as the interactive display.
     QImage snapshot()
@@ -328,11 +380,12 @@ public:
         }
         if(!inserted){delete layout->replaceWidget(original,preview);inserted=true;}
         original->hide();preview->bind(f);preview->show();preview->ensureDisplay();
+        preview->setRenderingEnabled(!dialog->isMinimized());
         if(!preview->ready()){restoreOriginal();restoreRows();return;}
         if(marker!=label){restoreRows();marker=label;cropForm=qobject_cast<QFormLayout*>(label->parentWidget()->layout());}
         if(cropForm){cropForm->setRowVisible(0,false);for(int row=1;row<=4&&row<cropForm->rowCount();row++)cropForm->setRowVisible(row,false);}
         const bool valid=crop::valid(readCrop(f));
-        hint->setText(valid?QString():QStringLiteral("当前裁剪范围为空，请使用下方数值修正，或恢复预设值。"));
+        hint->setText(valid?QString():QStringLiteral("当前范围为空或超出预览，请使用下方数值修正，或恢复预设值。"));
         // Preserve a repair path for old settings whose opposing margins sum to >=100%.
         if(!valid&&cropForm)for(int row=1;row<=4&&row<cropForm->rowCount();row++)cropForm->setRowVisible(row,true);
         hint->setVisible(!valid);boundUuid=uuid;
@@ -350,22 +403,44 @@ class Watcher final:public QObject {
 public:
     explicit Watcher(QObject *p):QObject(p)
     {
+        qApp->installEventFilter(this);
         connect(&timer,&QTimer::timeout,this,[this](){scan();});timer.start(100);
     }
-    ~Watcher() override {timer.stop();for(auto e:editors)if(e)delete e;}
+    ~Watcher() override {timer.stop();if(qApp)qApp->removeEventFilter(this);for(auto e:editors)if(e)delete e;}
+    bool eventFilter(QObject *object,QEvent *event) override
+    {
+        if(event->type()==QEvent::Show&&object->objectName()==QStringLiteral("OBSBasicFilters"))timer.setInterval(100);
+        return QObject::eventFilter(object,event);
+    }
     void scan()
     {
+        bool hasFilterWindow=false;
+        editors.removeIf([](const QPointer<Editor> &e){return e.isNull();});
         for(auto *w:QApplication::topLevelWidgets()) {
             auto *d=qobject_cast<QDialog*>(w);
             if(!d||!d->isVisible()||d->objectName()!=QStringLiteral("OBSBasicFilters"))continue;
+            hasFilterWindow=true;
             auto *e=dynamic_cast<Editor*>(d->findChild<QObject*>(QStringLiteral("cbCropEditorController"),Qt::FindDirectChildrenOnly));
             QLabel *marker=nullptr;QString uuid;
             auto *properties=d->findChild<QWidget*>(QStringLiteral("propertiesFrame"));
             if(properties)for(auto *label:properties->findChildren<QLabel*>()) {
-                const QString text=label->text();const auto pos=text.indexOf(markerPrefix);
+                const QString text=label->text();
+                if(text==QStringLiteral("模糊区域参数")||text==QStringLiteral("马赛克样式参数")) {
+                    label->setTextFormat(Qt::PlainText);
+                    label->setAlignment(Qt::AlignLeft|Qt::AlignVCenter);
+                    if(!label->property("cbSectionStyled").toBool()) {
+                        auto font=label->font();font.setBold(true);label->setFont(font);
+                        label->setContentsMargins(0,text==QStringLiteral("马赛克样式参数")?10:4,0,6);
+                        label->setProperty("cbSectionStyled",true);
+                    }
+                    auto *form=qobject_cast<QFormLayout*>(label->parentWidget()->layout());
+                    if(form){int row=-1;QFormLayout::ItemRole role;form->getWidgetPosition(label,&row,&role);
+                        if(row>=0&&role!=QFormLayout::SpanningRole){form->removeWidget(label);form->setWidget(row,QFormLayout::SpanningRole,label);}}
+                }
+                const auto pos=text.indexOf(markerPrefix);
                 if(pos<0||!label->parentWidget()->isVisibleTo(d))continue;
                 const QString value=text.mid(pos+markerPrefix.size(),36);
-                if(value.size()==36){marker=label;uuid=value;break;}
+                if(value.size()==36&&!marker){marker=label;uuid=value;}
             }
             if(!e&&!uuid.isEmpty()) {
                 auto *original=d->findChild<QWidget*>(QStringLiteral("preview"));
@@ -374,6 +449,7 @@ public:
             }
             if(e)e->sync(marker,uuid);
         }
+        timer.setInterval(hasFilterWindow?100:1000);
     }
 };
 QPointer<Watcher> watcher;

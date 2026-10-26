@@ -60,7 +60,9 @@ gs_texture_t *down_sample(composite_blur_filter_data_t *data,
 	data->render = create_or_reset_texrender(data->render);
 
 	uint32_t w = data->width / divisor;
+	if (!w) w = 1;
 	uint32_t h = data->height / divisor;
+	if (!h) h = 1;
 	gs_eparam_t *image = gs_effect_get_param_by_name(effect_down, "image");
 	gs_effect_set_texture(image, input_texture);
 
@@ -96,7 +98,9 @@ gs_texture_t *up_sample(composite_blur_filter_data_t *data,
 	uint32_t start_h = gs_texture_get_height(input_texture);
 
 	uint32_t w = data->width / divisor;
+	if (!w) w = 1;
 	uint32_t h = data->height / divisor;
+	if (!h) h = 1;
 	gs_eparam_t *image = gs_effect_get_param_by_name(effect_up, "image");
 	gs_effect_set_texture(image, input_texture);
 
@@ -177,6 +181,11 @@ static void dual_kawase_blur(composite_blur_filter_data_t *data)
 		}
 	}
 
+	/* Bound work even when old settings or transitions supply non-finite values.
+	 * Never downsample further than the source dimensions can represent. */
+	if (!texture || !data->width || !data->height) return;
+	float limit = fminf(1025.0f, (float)(data->width < data->height ? data->width : data->height));
+	kawase_passes = fmaxf(0.0f, fminf(kawase_passes, limit));
 	if (kawase_passes <= 0.01f) {
 		data->output_texrender =
 			create_or_reset_texrender(data->output_texrender);
